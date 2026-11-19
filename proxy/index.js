@@ -595,3 +595,4 @@ module.exports.handler = async function (event) {
 };
 
 module.exports._test = { zipName, crc32Update, s3Presign };
+module.exports._s3 = { s3Call, s3Presign, s3PutJson, s3GetJson, s3Conf };
