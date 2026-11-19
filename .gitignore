@@ -1,0 +1,5 @@
+node_modules/
+__pycache__/
+*.local.json
+s3.json
+key.json
