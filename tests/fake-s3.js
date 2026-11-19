@@ -20,7 +20,10 @@ function start() {
     req.on('end', () => {
       const body = Buffer.concat(chunks);
       const q = u.searchParams;
-      const send = (status, text, headers) => { res.writeHead(status, Object.assign({ 'Content-Type': 'application/xml' }, headers || {})); res.end(text || ''); };
+      /* CORS как у настоящего бакета (tools/bucket-setup.js): страница заливает и читает напрямую */
+      const cors = { 'Access-Control-Allow-Origin': req.headers.origin || '*', 'Access-Control-Allow-Methods': 'GET, PUT, HEAD', 'Access-Control-Allow-Headers': '*', 'Access-Control-Expose-Headers': 'ETag' };
+      const send = (status, text, headers) => { res.writeHead(status, Object.assign({ 'Content-Type': 'application/xml' }, cors, headers || {})); res.end(text || ''); };
+      if (req.method === 'OPTIONS') return send(200);
       if (req.method === 'GET' && !key) {
         const prefix = q.get('prefix') || '', delim = q.get('delimiter');
         const keys = [], dirs = new Set();
@@ -55,7 +58,8 @@ function start() {
       if (req.method === 'PUT') { objects.set(key, body); return send(200, '', { ETag: '"x"' }); }
       if (req.method === 'GET') {
         if (!objects.has(key)) return send(404, '<Error>NoSuchKey</Error>');
-        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': objects.get(key).length });
+        const disp = q.get('response-content-disposition');
+        res.writeHead(200, Object.assign({ 'Content-Type': q.get('response-content-type') || 'application/octet-stream', 'Content-Length': objects.get(key).length }, cors, disp ? { 'Content-Disposition': disp } : {}));
         return res.end(objects.get(key));
       }
       if (req.method === 'DELETE') { objects.delete(key); return send(204); }

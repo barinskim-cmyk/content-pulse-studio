@@ -3,3 +3,4 @@ __pycache__/
 *.local.json
 s3.json
 key.json
+tests/shot-*.png
