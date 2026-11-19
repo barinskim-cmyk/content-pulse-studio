@@ -9,7 +9,7 @@ const [dir, url] = process.argv.slice(2);
 const owner = fs.readFileSync(path.join(dir, 'owner-key.txt'), 'utf8').trim();
 const ORIGIN = 'https://barinskim-cmyk.github.io';
 let n = 0;
-function ok(c, m) { if (!c) { console.error('FAIL ' + m); process.exit(1); } n++; console.log('  ok  ' + m); }
+function ok(c, m, extra) { if (!c) throw new Error('FAIL ' + m + (extra ? ' ' + JSON.stringify(extra) : '')); n++; console.log('  ok  ' + m); }
 function crc32(buf) { let c = -1; for (let i = 0; i < buf.length; i++) { c ^= buf[i]; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; } return (c ^ -1) >>> 0; }
 async function call(a, body, auth, q) {
   const h = { Origin: ORIGIN, 'Content-Type': 'application/json' };
@@ -19,6 +19,8 @@ async function call(a, body, auth, q) {
 }
 (async () => {
   const O = { owner };
+  /* остатки прошлых прогонов */
+  for (const p of (await call('projects', null, { owner })).data.projects || []) if (/^Проверка /.test(p.name)) await call('delete', { pid: p.id }, { owner });
   const w = await call('whoami', null, O);
   ok(w.data.role === 'owner' && w.cors === ORIGIN, 'ключ владельца принят, CORS для страницы');
   ok((await call('whoami', null, {})).status === 401, 'без ключа — 401');
@@ -33,11 +35,18 @@ async function call(a, body, auth, q) {
       ok(r.status === 200 && r.headers.get('access-control-allow-origin'), 'кадр ' + f.fid + ' залит по подписанной ссылке (CORS бакета ок)');
       await fetch(f.preview, { method: 'PUT', body: Buffer.from('preview') });
     }
-    const st = (await call('state', null, E, { pid })).data.state;
+    const st = (await call('state', null, O, { pid })).data.state;
     st.photos = [{ fid: 'a1', name: 'IMG_1.jpg', size: a.length, crc: crc32(a) }, { fid: 'b2', name: 'IMG_2.jpg', size: b.length, crc: crc32(b) }];
-    st.cards = [{ id: 'c1', name: 'Платье 74595', slots: ['a1', 'b2'] }];
-    ok((await call('save', { pid, baseRev: st.rev, state: st }, E)).status === 200, 'ссылка редактирования сохранила отбор');
-    ok((await call('save', { pid, baseRev: st.rev + 1, state: st }, D)).status === 403, 'ссылка скачивания не правит');
+    st.cards = [{ id: 'c1', name: 'Карточка 1', slots: ['a1', 'b2'] }];
+    const s1 = await call('save', { pid, baseRev: st.rev, state: st }, O);
+    ok(s1.status === 200, 'владелец записал кадры и карточку', s1.data);
+    const g = (await call('state', null, E, { pid })).data.state;
+    g.cards[0].name = 'Платье 74595';
+    const s2 = await call('save', { pid, baseRev: g.rev, state: g }, E);
+    ok(s2.status === 200, 'ссылка редактирования переименовала карточку', s2.data);
+    g.photos.push({ fid: 'zz', name: 'x' });
+    ok((await call('save', { pid, baseRev: s2.data.rev, state: g }, E)).status === 403, 'ссылка редактирования не добавляет чужие кадры');
+    ok((await call('save', { pid, baseRev: s2.data.rev, state: st }, D)).status === 403, 'ссылка скачивания не правит');
     const m = await call('media', { pid, fids: ['a1'] }, D);
     ok((await fetch(m.data.media.a1.preview)).status === 200, 'превью по ссылке скачивания');
     const z = await call('zip', { pid, op: 'start' }, D);
