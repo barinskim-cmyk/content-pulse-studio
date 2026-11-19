@@ -1,0 +1,56 @@
+/* Проверка живой прослойки на настоящем облаке: node tools/smoke.js <папка с ключами> <адрес функции>
+   Создаёт временный проект, заливает два кадра, правит отбор по ссылке редактирования,
+   проверяет запреты ссылки скачивания, собирает архив, скачивает и сверяет его,
+   затем удаляет проект целиком. Ключ владельца не печатает. */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const [dir, url] = process.argv.slice(2);
+const owner = fs.readFileSync(path.join(dir, 'owner-key.txt'), 'utf8').trim();
+const ORIGIN = 'https://barinskim-cmyk.github.io';
+let n = 0;
+function ok(c, m) { if (!c) { console.error('FAIL ' + m); process.exit(1); } n++; console.log('  ok  ' + m); }
+function crc32(buf) { let c = -1; for (let i = 0; i < buf.length; i++) { c ^= buf[i]; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; } return (c ^ -1) >>> 0; }
+async function call(a, body, auth, q) {
+  const h = { Origin: ORIGIN, 'Content-Type': 'application/json' };
+  if (auth.owner) h['X-Owner-Key'] = auth.owner; if (auth.token) h['X-Share-Token'] = auth.token;
+  const r = await fetch(url + '?a=' + a + (q ? '&' + new URLSearchParams(q) : ''), { method: body ? 'POST' : 'GET', headers: h, body: body ? JSON.stringify(body) : undefined });
+  return { status: r.status, data: await r.json().catch(() => ({})), cors: r.headers.get('access-control-allow-origin') };
+}
+(async () => {
+  const O = { owner };
+  const w = await call('whoami', null, O);
+  ok(w.data.role === 'owner' && w.cors === ORIGIN, 'ключ владельца принят, CORS для страницы');
+  ok((await call('whoami', null, {})).status === 401, 'без ключа — 401');
+  const c = await call('create', { name: 'Проверка ' + new Date().toISOString().slice(0, 16) }, O);
+  ok(c.status === 200, 'проект создан');
+  const pid = c.data.id, E = { token: c.data.edit }, D = { token: c.data.download };
+  try {
+    const a = Buffer.from('кадр один ' + 'x'.repeat(3000)), b = Buffer.alloc(200000, 3);
+    const up = await call('upload', { pid, op: 'start', files: [{ fid: 'a1', size: a.length }, { fid: 'b2', size: b.length }] }, O);
+    for (const [f, buf] of [[up.data.files[0], a], [up.data.files[1], b]]) {
+      const r = await fetch(f.put, { method: 'PUT', body: buf, headers: { Origin: ORIGIN } });
+      ok(r.status === 200 && r.headers.get('access-control-allow-origin'), 'кадр ' + f.fid + ' залит по подписанной ссылке (CORS бакета ок)');
+      await fetch(f.preview, { method: 'PUT', body: Buffer.from('preview') });
+    }
+    const st = (await call('state', null, E, { pid })).data.state;
+    st.photos = [{ fid: 'a1', name: 'IMG_1.jpg', size: a.length, crc: crc32(a) }, { fid: 'b2', name: 'IMG_2.jpg', size: b.length, crc: crc32(b) }];
+    st.cards = [{ id: 'c1', name: 'Платье 74595', slots: ['a1', 'b2'] }];
+    ok((await call('save', { pid, baseRev: st.rev, state: st }, E)).status === 200, 'ссылка редактирования сохранила отбор');
+    ok((await call('save', { pid, baseRev: st.rev + 1, state: st }, D)).status === 403, 'ссылка скачивания не правит');
+    const m = await call('media', { pid, fids: ['a1'] }, D);
+    ok((await fetch(m.data.media.a1.preview)).status === 200, 'превью по ссылке скачивания');
+    const z = await call('zip', { pid, op: 'start' }, D);
+    const p = await call('zip', { pid, op: 'part', key: z.data.key, uploadId: z.data.uploadId, n: 1, offset: 0, final: true, entries: [{ fid: 'a1', name: 'Платье 74595/Платье 74595_1.jpg' }, { fid: 'b2', name: 'Платье 74595/Платье 74595_2.jpg' }] }, D);
+    ok(p.status === 200, 'архив собран в облаке');
+    const d = await call('zip', { pid, op: 'done', key: z.data.key, uploadId: z.data.uploadId, etags: [p.data.etag], name: 'Проверка' }, D);
+    const zr = await fetch(d.data.url);
+    const zip = Buffer.from(await zr.arrayBuffer());
+    ok(zr.status === 200 && zip.indexOf(b) > 0 && zip.indexOf(Buffer.from('Платье 74595_2.jpg')) > 0, 'архив скачан, внутри кадры и русские имена (' + zip.length + ' байт)');
+    fs.writeFileSync('/tmp/studio-smoke.zip', zip);
+  } finally {
+    const del = await call('delete', { pid }, O);
+    ok(del.status === 200, 'временный проект удалён (' + del.data.deleted + ' объектов)');
+  }
+  console.log(n + ' проверок на живом облаке прошли');
+})().catch((e) => { console.error(e); process.exit(1); });
