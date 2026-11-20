@@ -49,13 +49,22 @@ async function call(a, body, auth, q) {
     ok((await call('save', { pid, baseRev: s2.data.rev, state: st }, D)).status === 403, 'ссылка скачивания не правит');
     const m = await call('media', { pid, fids: ['a1'] }, D);
     ok((await fetch(m.data.media.a1.preview)).status === 200, 'превью по ссылке скачивания');
+    /* комментарий-картинка: браузер заливает JPEG по ссылке прослойки и передаёт его в архив */
+    const noteBuf = Buffer.from('JPEG-комментарий ' + 'n'.repeat(500));
+    const noteId = require('crypto').randomBytes(16).toString('hex');
+    const nt = await call('note', { pid, id: noteId }, D);
+    const np = await fetch(nt.data.put, { method: 'PUT', body: noteBuf, headers: { Origin: ORIGIN } });
+    ok(nt.status === 200 && np.status === 200, 'комментарий-картинка залита по ссылке скачивания');
     const z = await call('zip', { pid, op: 'start' }, D);
-    const p = await call('zip', { pid, op: 'part', key: z.data.key, uploadId: z.data.uploadId, n: 1, offset: 0, final: true, entries: [{ fid: 'a1', name: 'Платье 74595/Платье 74595_1.jpg' }, { fid: 'b2', name: 'Платье 74595/Платье 74595_2.jpg' }] }, D);
+    const p = await call('zip', { pid, op: 'part', key: z.data.key, uploadId: z.data.uploadId, n: 1, offset: 0, final: true, entries: [{ note: noteId, name: 'Платье 74595/00_КОММЕНТАРИЙ.jpg', size: noteBuf.length, crc: crc32(noteBuf) }, { fid: 'a1', name: 'Платье 74595/Платье 74595_1.jpg' }, { fid: 'b2', name: 'Платье 74595/Платье 74595_2.jpg' }] }, D);
     ok(p.status === 200, 'архив собран в облаке');
     const d = await call('zip', { pid, op: 'done', key: z.data.key, uploadId: z.data.uploadId, etags: [p.data.etag], name: 'Проверка' }, D);
     const zr = await fetch(d.data.url);
     const zip = Buffer.from(await zr.arrayBuffer());
     ok(zr.status === 200 && zip.indexOf(b) > 0 && zip.indexOf(Buffer.from('Платье 74595_2.jpg')) > 0, 'архив скачан, внутри кадры и русские имена (' + zip.length + ' байт)');
+    ok(zip.indexOf(noteBuf) > 0 && zip.indexOf(Buffer.from('00_КОММЕНТАРИЙ.jpg')) > 0, 'и комментарий-картинка в папке карточки');
+    const ex = await call('exif', { pid, fids: ['a1'] }, D);
+    ok(ex.status === 200 && ex.data.shot.a1 === '', 'время съёмки читается (у тестового кадра его нет)');
     fs.writeFileSync('/tmp/studio-smoke.zip', zip);
   } finally {
     const del = await call('delete', { pid }, O);
