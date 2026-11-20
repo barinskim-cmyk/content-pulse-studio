@@ -226,6 +226,47 @@ function serve(proxy) {
     await cl2.waitForSelector('#stName');
     ok(true, 'ссылка редактирования при этом работает');
 
+    console.log('время съёмки');
+    /* настоящие JPEG с EXIF: имена нарочно в обратном порядке относительно времени */
+    execFileSync('python3', ['-c', [
+      'from PIL import Image', 'import sys',
+      'd = sys.argv[1]',
+      'for name, t, sub in [("B_0001.jpg", "2026:11:18 12:00:03", "0"), ("A_0002.jpg", "2026:11:18 12:00:01", "5"), ("C_0003.jpg", "2026:11:18 12:00:01", "25"), ("0004 1.jpg", None, None)]:',
+      '    im = Image.new("RGB", (300, 400), (90, 90, 160)); ex = Image.Exif(); e = ex.get_ifd(0x8769)',
+      '    if t: e[0x9003] = t; e[0x9291] = sub',
+      '    im.save(d + "/" + name, "JPEG", exif=ex.tobytes())',
+    ].join('\n'), dir]);
+    await owner.click('#stModalPanel [data-st=close]');
+    await owner.click('.st-bar-right [data-st=projects]');
+    await owner.waitForSelector('#stNewName');
+    await owner.fill('#stNewName', 'EXIF тест');
+    await owner.press('#stNewName', 'Enter');
+    await owner.waitForFunction(() => App.projectName === 'EXIF тест' && !document.body.classList.contains('st-booting'));
+    const pid2 = await owner.evaluate(() => ST.pid);
+    await owner.setInputFiles('#stFileInput', ['B_0001.jpg', 'A_0002.jpg', 'C_0003.jpg', '0004 1.jpg'].map((n) => path.join(dir, n)));
+    await owner.waitForFunction(() => App.photos.length === 4 && !ST.uploading, null, { timeout: 30000 });
+    await waitSaved(owner);
+    const trayOrder = (page) => page.$$eval('#cbTrayGrid .cb-thumb', (a) => a.map((x) => cbPhotoById(x.getAttribute('data-pid')).name));
+    let order = await trayOrder(owner);
+    ok(order.join('|') === 'C_0003.jpg|A_0002.jpg|B_0001.jpg|0004 1.jpg', 'галерея по времени съёмки: доли секунды решают, без времени — в конце', order);
+    st = stateOf(pid2);
+    ok(st.photos.find((p) => p.name === 'C_0003.jpg').shot === '2026-11-18T12:00:01.250' && st.photos.find((p) => p.name === '0004 1.jpg').shot === '', 'время съёмки сохранено в отборе');
+
+    /* кадры, загруженные раньше (без времени в отборе): страница дочитывает время через прослойку */
+    const legacy = stateOf(pid2);
+    legacy.photos.forEach((p) => { delete p.shot; });
+    legacy.rev += 1;
+    s3.objects.set('projects/' + pid2 + '/state.json', Buffer.from(JSON.stringify(legacy)));
+    await owner.reload();
+    await owner.waitForFunction(() => ST.pid && App.photos.length === 4 && App.photos.every((p) => p.shot !== undefined), null, { timeout: 15000 });
+    await waitSaved(owner);
+    order = await trayOrder(owner);
+    st = stateOf(pid2);
+    ok(order.join('|') === 'C_0003.jpg|A_0002.jpg|B_0001.jpg|0004 1.jpg' && st.photos.find((p) => p.name === 'B_0001.jpg').shot === '2026-11-18T12:00:03.000',
+      'старые кадры: время дочитано в облаке, сохранено, галерея по времени', order);
+    const dlNames = await owner.evaluate(() => stEntries({ scope: 'all' }).map((e) => e.name));
+    ok(dlNames.join('|') === 'C_0003.jpg|A_0002.jpg|B_0001.jpg|0004 1.jpg', '«все кадры» в архиве — тоже по времени', dlNames);
+
     ok(errors.length === 0, 'без ошибок JavaScript на страницах', errors);
     console.log('\n' + pass + ' проверок в браузере прошли');
   } finally {

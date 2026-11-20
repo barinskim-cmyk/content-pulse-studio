@@ -18,7 +18,7 @@
    Префикс функций — st*. ES5, без фреймворков, как Cardboard.
    ============================================================ */
 
-var ST_VERSION = '0.1.0';
+var ST_VERSION = '0.2.0';
 var ST_PROXY = 'https://functions.yandexcloud.net/d4e00ctqnc5ki2n86c7c';
 if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && window.ST_PROXY_OVERRIDE) ST_PROXY = window.ST_PROXY_OVERRIDE;
 
@@ -306,6 +306,7 @@ function stOpenProject(pid, meta) {
     stUpdateBar();
     stStartPoll();
     if (ST.mode === 'download') stRenderViewer();
+    if (ST.role === 'owner') stBackfillShot();
   }).catch(function (e) {
     cbBusyHide();
     stModal('<h2>Съёмка не открылась</h2><div class="st-err">' + stEsc(e.message) + '</div>'
@@ -351,7 +352,7 @@ cbProjectData = function () {
   d.studio = 1;
   d.photos = App.photos.map(function (p) {
     var o = { id: p.id, name: p.name, w: p.w, h: p.h, kind: p.kind || 'photo' };
-    if (p.fid) { o.fid = p.fid; o.size = p.size; o.crc = p.crc; o.type = p.type || ''; o.added = p.added || null; }
+    if (p.fid) { o.fid = p.fid; o.size = p.size; o.crc = p.crc; o.type = p.type || ''; o.added = p.added || null; if (p.shot !== undefined) o.shot = p.shot; }
     else o.dataUrl = p.dataUrl;          /* референсы из Cardboard — внутри отбора, как раньше */
     return o;
   });
@@ -415,9 +416,8 @@ function stMerge3(base, local, remote) {
   base = base || {}; local = local || {}; remote = remote || {};
   var out = stClone(remote);
   ['cards', 'containers', 'templates'].forEach(function (k) { out[k] = stMergeById(base[k], local[k], remote[k]); });
-  var ph = {}, photos = [];
-  (remote.photos || []).concat(local.photos || []).forEach(function (p) { if (p && !ph[p.id]) { ph[p.id] = true; photos.push(p); } });
-  out.photos = photos;
+  /* кадры — как карточки: по каждому кадру берём ту версию, которую меняли (например, дописали время съёмки) */
+  out.photos = stMergeById(base.photos, local.photos, remote.photos);
   out.nextId = Math.max(+local.nextId || 0, +remote.nextId || 0);
   var seen = {}, log = [];
   (remote.log || []).concat(local.log || []).forEach(function (e) {
@@ -507,6 +507,42 @@ var ST_CRC = (function () {
   return t;
 })();
 
+/** Время съёмки из EXIF файла (начало файла, 128 КБ); нет — ''. */
+function stShotFile(file) {
+  return file.slice(0, 131072).arrayBuffer().then(function (buf) { return stExifTime(new Uint8Array(buf)); }, function () { return ''; });
+}
+
+/** Кадры, загруженные до того, как страница читала EXIF: время съёмки читает прослойка
+    прямо в облаке (начало каждого оригинала), пачками по 300. Потом галерея — по времени. */
+function stBackfillShot() {
+  var pid = ST.pid;
+  var todo = App.photos.filter(function (p) { return p.fid && p.shot === undefined; }).map(function (p) { return p.fid; });
+  if (!todo.length) return Promise.resolve();
+  var done = 0, found = 0;
+  stStatus('читаю время съёмки: 0 из ' + todo.length);
+  var batches = [];
+  for (var i = 0; i < todo.length; i += 300) batches.push(todo.slice(i, i + 300));
+  return batches.reduce(function (pr, b) {
+    return pr.then(function () {
+      if (ST.pid !== pid) return;
+      return stCallOk('exif', { pid: pid, fids: b }).then(function (d) {
+        App.photos.forEach(function (p) {
+          var v = p.fid ? d.shot[p.fid] : undefined;
+          if (typeof v === 'string') { p.shot = v; if (v) found++; }
+        });
+        done += b.length;
+        stStatus('читаю время съёмки: ' + done + ' из ' + todo.length);
+      });
+    });
+  }, Promise.resolve()).then(function () {
+    if (ST.pid !== pid) return;
+    cbRenderTray();
+    cbMarkDirty();
+    stSave();
+    cbToast('Галерея — по времени съёмки: время есть у ' + found + ' из ' + todo.length + ' кадров');
+  }).catch(function (e) { stStatus('время съёмки не прочиталось: ' + e.message); });
+}
+
 /** CRC32 файла кусками по 8 МБ — нужен прослойке, чтобы собрать ZIP за один проход. */
 function stCrcFile(file) {
   var CH = 8 * 1024 * 1024, pos = 0, c = -1;
@@ -572,8 +608,8 @@ function stUploadFiles(fileList) {
   function one(f) {
     var fid = stRandId('f');
     order[fid] = files.indexOf(f);
-    return Promise.all([stPreview(f), stCrcFile(f)]).then(function (res) {
-      var pv = res[0], crc = res[1];
+    return Promise.all([stPreview(f), stCrcFile(f), stShotFile(f)]).then(function (res) {
+      var pv = res[0], crc = res[1], shot = res[2];
       return stCallOk('upload', { pid: ST.pid, op: 'start', files: [{ fid: fid, size: f.size, type: f.type || 'image/jpeg' }] }).then(function (d) {
         var u = d.files[0];
         var jobs = [];
@@ -592,7 +628,7 @@ function stUploadFiles(fileList) {
         return Promise.all(jobs);
       }).then(function () {
         var local = pv.blob ? URL.createObjectURL(pv.blob) : null;
-        App.photos.push({ id: fid, fid: fid, name: f.name, size: f.size, crc: crc, type: f.type || '', added: stNow(),
+        App.photos.push({ id: fid, fid: fid, name: f.name, size: f.size, crc: crc, type: f.type || '', added: stNow(), shot: shot,
           w: pv.w, h: pv.h, kind: 'photo', missing: false, dataUrl: local, _localUrl: local });
         done++; progress();
         if (done % 10 === 0) { cbRenderTray(); }
@@ -686,7 +722,7 @@ function stEntries(opts) {
     return p;
   };
   if (opts.scope === 'all') {
-    App.photos.forEach(function (p) { if (p.fid) out.push({ fid: p.fid, name: uniq(stSafe(p.name)), size: p.size }); });
+    App.photos.slice().sort(cbPhotoCompare).forEach(function (p) { if (p.fid) out.push({ fid: p.fid, name: uniq(stSafe(p.name)), size: p.size }); });
     return out;
   }
   var groups = [], names = {};

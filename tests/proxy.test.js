@@ -97,6 +97,8 @@ function httpReq(method, url, body) {
   ok((await call('save', { pid, baseRev: 3, state: rs }, R)).status === 403, 'ссылка скачивания не правит отбор');
   const sneaky = JSON.parse(JSON.stringify(g)); sneaky.photos.push({ fid: 'zzz', name: 'x.jpg' });
   ok((await call('save', { pid, baseRev: 3, state: sneaky }, G)).status === 403, 'гость не подсовывает чужие кадры');
+  const ex = await call('exif', { pid, fids: ['f1', 'f2', 'nope'] }, G);
+  ok(ex.status === 200 && ex.data.shot.f1 === '' && ex.data.shot.nope === '', 'время съёмки: у не-JPEG и несуществующего — пусто');
   const m = await call('media', { pid, fids: ['f1', '../x'] }, G);
   ok(m.data.media.f1 && !m.data.media['../x'], 'превью по ссылке, мусорный номер отброшен');
 

@@ -58,6 +58,12 @@ function start() {
       if (req.method === 'PUT') { objects.set(key, body); return send(200, '', { ETag: '"x"' }); }
       if (req.method === 'GET') {
         if (!objects.has(key)) return send(404, '<Error>NoSuchKey</Error>');
+        const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range || '');
+        if (range) {
+          const part = objects.get(key).subarray(+range[1], +range[2] + 1);
+          res.writeHead(206, Object.assign({ 'Content-Length': part.length }, cors));
+          return res.end(part);
+        }
         const disp = q.get('response-content-disposition');
         res.writeHead(200, Object.assign({ 'Content-Type': q.get('response-content-type') || 'application/octet-stream', 'Content-Length': objects.get(key).length }, cors, disp ? { 'Content-Disposition': disp } : {}));
         return res.end(objects.get(key));

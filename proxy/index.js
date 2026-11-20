@@ -23,12 +23,14 @@
      exports/<rand>.zip          архивы скачивания (удаляются правилом бакета через 3 дня)
 
    Действия (?a=...): ping, whoami, projects, create, share, delete,
-   state, save, upload, media, zip.
+   state, save, upload, media, zip, exif.
    ============================================================ */
 
 'use strict';
 
 const crypto = require('crypto');
+/* время съёмки из EXIF — общий файл со страницей; в функции лежит рядом с index.js */
+const exifTime = (() => { try { return require('./exif-time.js'); } catch (e) { return require('../exif-time.js'); } })();
 const http = require('http');
 const https = require('https');
 
@@ -175,6 +177,22 @@ async function s3List(prefix, delimiter) {
 }
 
 function xmlText(s) { return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&'); }
+
+/** Начало объекта (Range) как Buffer; нет объекта — null. */
+function s3GetHead(key, bytes) {
+  const S = s3Conf();
+  const signed = s3Sign('GET', key, {}, {});
+  return new Promise((resolve, reject) => {
+    const req = transport().request({ method: 'GET', hostname: S.hostname, port: S.port, path: signed.path,
+      headers: Object.assign({}, signed.headers, { Range: 'bytes=0-' + (bytes - 1) }) }, (r) => {
+      const ch = []; r.on('data', (c) => ch.push(c));
+      r.on('end', () => resolve(r.statusCode === 200 || r.statusCode === 206 ? Buffer.concat(ch).subarray(0, bytes) : null));
+      r.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 /** Поток объекта из бакета: onChunk(buf) на каждый кусок; возвращает число байт. */
 function s3Stream(key, onChunk) {
@@ -387,6 +405,25 @@ function doMedia(pid, req) {
   return ok({ media: out, ttl: MEDIA_TTL });
 }
 
+/* ---------- время съёмки ----------
+   Для кадров, загруженных до того, как страница стала читать EXIF сама: прослойка
+   читает начало оригинала (128 КБ) прямо в облаке и отдаёт время съёмки.
+   {fids:[...]} -> {shot: {fid: '2026-11-18T12:03:44.120' | ''}} */
+
+async function doExif(pid, req) {
+  const fids = (req.fids || []).filter((f) => FID_RE.test(String(f))).slice(0, 300);
+  const out = {};
+  let next = 0;
+  async function worker() {
+    while (next < fids.length) {
+      const f = fids[next++];
+      try { const head = await s3GetHead(P(pid) + 'o/' + f, 131072); out[f] = head ? exifTime(head) : ''; } catch (e) { out[f] = null; }
+    }
+  }
+  await Promise.all(Array.from({ length: 12 }, worker));
+  return ok({ shot: out });
+}
+
 /* ---------- архив скачивания ----------
    Один ZIP (без сжатия, ZIP64 для больших) собирается многочастной загрузкой в
    бакете: страница шлёт кадры пачками, каждый вызов дописывает свой кусок. CRC и
@@ -585,6 +622,7 @@ module.exports.handler = async function (event) {
     else if (a === 'upload') r = await doUpload(pid, req);
     else if (a === 'media') r = doMedia(pid, req);
     else if (a === 'zip') r = await doZip(pid, req);
+    else if (a === 'exif') r = await doExif(pid, req);
     else r = fail(400, 'Неизвестное действие');
     console.log(JSON.stringify({ ev: a, op: req.op || undefined, role: who.role, status: r.status, ms: Date.now() - t0 }));
     return json(r.status, r.result, h);

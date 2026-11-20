@@ -48,16 +48,23 @@ async function wait(op, token) {
   return op.response || {};
 }
 
-/* ZIP из одного файла без сжатия — функции этого достаточно, зависимостей не нужно */
-function zipOne(name, data) {
-  let c = -1;
-  for (let i = 0; i < data.length; i++) { c ^= data[i]; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; }
-  const crc = (c ^ -1) >>> 0, n = Buffer.from(name);
-  const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(n.length, 26);
-  const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(0x0314, 4); ch.writeUInt16LE(20, 6); ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(n.length, 28); ch.writeUInt32LE(0x81a40000, 38);
-  const cdOff = 30 + n.length + data.length, cd = Buffer.concat([ch, n]);
-  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(cdOff, 16);
-  return Buffer.concat([lh, n, data, cd, end]);
+/* ZIP из нескольких файлов без сжатия — функции этого достаточно, зависимостей не нужно.
+   files: [[имя, Buffer], ...] */
+function zipFiles(files) {
+  const parts = [], cds = [];
+  let off = 0;
+  for (const [name, data] of files) {
+    let c = -1;
+    for (let i = 0; i < data.length; i++) { c ^= data[i]; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; }
+    const crc = (c ^ -1) >>> 0, n = Buffer.from(name);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(n.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(0x0314, 4); ch.writeUInt16LE(20, 6); ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(n.length, 28); ch.writeUInt32LE(0x81a40000, 38); ch.writeUInt32LE(off, 42);
+    parts.push(lh, n, data); cds.push(ch, n);
+    off += 30 + n.length + data.length;
+  }
+  const cd = Buffer.concat(cds);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
+  return Buffer.concat(parts.concat([cd, end]));
 }
 
 (async () => {
@@ -72,11 +79,12 @@ function zipOne(name, data) {
   if (!fn) fn = await wait(await call('POST', FN_API + '/functions', { folderId: cfg.folderId, name: FN_NAME, description: 'Content Pulse Studio: прослойка к облачному хранилищу' }, tok), tok);
   console.log('функция', fn.id);
 
-  const code = fs.readFileSync(path.join(__dirname, '..', 'proxy', 'index.js'));
+  const root = path.join(__dirname, '..');
+  const bundle = zipFiles([['index.js', fs.readFileSync(path.join(root, 'proxy', 'index.js'))], ['exif-time.js', fs.readFileSync(path.join(root, 'exif-time.js'))]]);
   const version = {
     functionId: fn.id, entrypoint: 'index.handler',
     resources: { memory: String(512 * 1024 * 1024) }, executionTimeout: '600s',
-    content: zipOne('index.js', code).toString('base64'),
+    content: bundle.toString('base64'),
     environment: { S3_KEY_ID: s3.S3_KEY_ID, S3_SECRET: s3.S3_SECRET, S3_BUCKET: cfg.bucket, OWNER_KEY: ownerKey, ALLOWED_ORIGINS: cfg.origin },
   };
   let ver;

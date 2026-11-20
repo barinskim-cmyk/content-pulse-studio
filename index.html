@@ -660,7 +660,7 @@ body.cb-file-drag #cbDropOverlay { display: flex; }
   #cbPrint .cbp-sec { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #888; margin: 16px 0 10px; page-break-after: avoid; }
 }
 </style>
-<link rel="stylesheet" href="studio.css?v=0.1.0">
+<link rel="stylesheet" href="studio.css?v=0.2.0">
 </head>
 <body>
 
@@ -1992,6 +1992,16 @@ function cbTraySwitch(tab) {
 document.getElementById('cbTrayTabPhoto').onclick = function () { cbTraySwitch('photo'); };
 document.getElementById('cbTrayTabRef').onclick = function () { cbTraySwitch('ref'); };
 
+/* Порядок кадров в галерее: по времени съёмки (EXIF, с долями секунды),
+   при равном времени и у кадров без времени — по имени. Кадры без времени — в конце.
+   Content Pulse Studio: время съёмки (p.shot) читается при загрузке и прослойкой. */
+function cbPhotoCompare(a, b) {
+  var ta = a.shot || '', tb = b.shot || '';
+  if (ta && tb && ta !== tb) return ta < tb ? -1 : 1;
+  if (!ta !== !tb) return ta ? -1 : 1;
+  return String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' });
+}
+
 function cbRenderTray() {
   var grid = document.getElementById('cbTrayGrid');
   var filter = document.getElementById('cbFilter').value.toLowerCase();
@@ -1999,9 +2009,7 @@ function cbRenderTray() {
   var kind = App.trayTab === 'ref' ? 'ref' : 'photo';
 
   var all = App.photos.filter(function (p) { return (p.kind || 'photo') === kind; });
-  var list = all.slice().sort(function (a, b) {
-    return String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' });
-  });
+  var list = all.slice().sort(cbPhotoCompare);
   if (filter) {
     list = list.filter(function (p) { return p.name.toLowerCase().indexOf(filter) !== -1; });
   }
@@ -3360,6 +3368,7 @@ cbHistoryReset();
 /* при запуске — «лаунчер»: cp-app.js показывает вместо него витрину съёмок */
 setTimeout(function () { cbProjModalOpen('launcher', true); }, 150);
 </script>
-<script src="studio.js?v=0.1.0"></script>
+<script src="exif-time.js?v=0.2.0"></script>
+<script src="studio.js?v=0.2.0"></script>
 </body>
 </html>
