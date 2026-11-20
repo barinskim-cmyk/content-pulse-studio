@@ -660,7 +660,7 @@ body.cb-file-drag #cbDropOverlay { display: flex; }
   #cbPrint .cbp-sec { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #888; margin: 16px 0 10px; page-break-after: avoid; }
 }
 </style>
-<link rel="stylesheet" href="studio.css?v=0.2.0">
+<link rel="stylesheet" href="studio.css?v=0.2.1">
 </head>
 <body>
 
@@ -968,8 +968,10 @@ window.addEventListener('beforeunload', function (e) {
   if (App.dirty) { e.preventDefault(); e.returnValue = ''; }
 });
 
+/* Content Pulse Studio: превью грузятся, только когда видны (loading="lazy") — в съёмке
+   тысяча кадров, и все разом страница не тянет; для печати PDF ленивость снимается. */
 function cbImgHtml(photo) {
-  if (photo.dataUrl) return '<img src="' + photo.dataUrl + '" alt="">';
+  if (photo.dataUrl) return '<img loading="lazy" src="' + photo.dataUrl + '" alt="">';
   return '<div class="cb-missing-box" title="' + cbEsc(photo.path || photo.name) + '">файл не найден</div>';
 }
 
@@ -3156,7 +3158,7 @@ function cbPrintPdf() {
     html += '<div class="cbp-card"><h2>' + (ci + 1) + '. ' + cbEsc(card.title);
     if (card.category) html += '<span class="cbp-cat">' + cbEsc(card.category) + '</span>';
     html += '</h2>';
-    html += cbCardPageHTML(card).replace(/draggable="true"/g, '').replace(/<button[^>]*cb-slot-x[^>]*>×<\/button>/g, '');
+    html += cbCardPageHTML(card).replace(/draggable="true"/g, '').replace(/ loading="lazy"/g, '').replace(/<button[^>]*cb-slot-x[^>]*>×<\/button>/g, '');
     html += '</div>';
   });
   if (App.containers.length) {
@@ -3368,7 +3370,7 @@ cbHistoryReset();
 /* при запуске — «лаунчер»: cp-app.js показывает вместо него витрину съёмок */
 setTimeout(function () { cbProjModalOpen('launcher', true); }, 150);
 </script>
-<script src="exif-time.js?v=0.2.0"></script>
-<script src="studio.js?v=0.2.0"></script>
+<script src="exif-time.js?v=0.2.1"></script>
+<script src="studio.js?v=0.2.1"></script>
 </body>
 </html>

@@ -18,7 +18,7 @@
    Префикс функций — st*. ES5, без фреймворков, как Cardboard.
    ============================================================ */
 
-var ST_VERSION = '0.2.0';
+var ST_VERSION = '0.2.1';
 var ST_PROXY = 'https://functions.yandexcloud.net/d4e00ctqnc5ki2n86c7c';
 if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && window.ST_PROXY_OVERRIDE) ST_PROXY = window.ST_PROXY_OVERRIDE;
 
@@ -918,6 +918,55 @@ function stRenderViewer() {
   if (!any) html += '<div class="st-note">В отборе пока нет кадров.</div>';
   v.innerHTML = html;
 }
+
+/* ---------- превью, которые не загрузились ----------
+   Браузер обрывает загрузку картинок при любой заминке сети: переключился VPN,
+   сменилась сеть, Chrome перечитал сертификаты (ERR_CERT_VERIFIER_CHANGED) — и превью
+   остаются пустыми навсегда. Ловим ошибку каждой картинки из облака и перезапрашиваем:
+   через 1,5 / 4 / 10 / 20 / 40 секунд. Со второго повтора — со свежей подписанной ссылкой
+   (вдруг старая истекла). */
+
+var ST_RETRY_DELAYS = [1500, 4000, 10000, 20000, 40000];
+var _stFreshQueue = {}, _stFreshTimer = 0;
+
+function stFidFromUrl(url) { var m = /\/p\/([A-Za-z0-9_-]+)\.jpg/.exec(url || ''); return m ? m[1] : ''; }
+
+/** Свежие ссылки на превью — пачкой раз в секунду для всех ждущих картинок. */
+function stFreshUrl(fid) {
+  return new Promise(function (resolve) {
+    (_stFreshQueue[fid] = _stFreshQueue[fid] || []).push(resolve);
+    if (_stFreshTimer) return;
+    _stFreshTimer = setTimeout(function () {
+      var q = _stFreshQueue; _stFreshQueue = {}; _stFreshTimer = 0;
+      var fids = Object.keys(q);
+      stCallOk('media', { pid: ST.pid, fids: fids }).then(function (d) {
+        fids.forEach(function (f) {
+          var url = d.media[f] && d.media[f].preview;
+          if (url) {
+            ST.media[f] = url;
+            App.photos.forEach(function (p) { if (p.fid === f && !p._localUrl) p.dataUrl = url; });
+          }
+          q[f].forEach(function (r) { r(url || ''); });
+        });
+      }, function () { fids.forEach(function (f) { q[f].forEach(function (r) { r(''); }); }); });
+    }, 1000);
+  });
+}
+
+document.addEventListener('error', function (e) {
+  var img = e.target;
+  if (!img || img.tagName !== 'IMG' || !/X-Amz-Signature/.test(img.src)) return;
+  var n = +(img.getAttribute('data-st-retry') || 0);
+  if (n >= ST_RETRY_DELAYS.length) return;
+  img.setAttribute('data-st-retry', n + 1);
+  var fid = stFidFromUrl(img.src);
+  setTimeout(function () {
+    if (!img.isConnected) return;
+    var again = function (url) { if (url && img.isConnected) img.src = url.split('#')[0] + '#r' + (n + 1); };
+    if (n >= 1 && fid && ST.pid) stFreshUrl(fid).then(again);
+    else again(img.src);
+  }, ST_RETRY_DELAYS[n]);
+}, true);
 
 /* ---------- события ---------- */
 

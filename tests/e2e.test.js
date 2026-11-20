@@ -267,6 +267,36 @@ function serve(proxy) {
     const dlNames = await owner.evaluate(() => stEntries({ scope: 'all' }).map((e) => e.name));
     ok(dlNames.join('|') === 'C_0003.jpg|A_0002.jpg|B_0001.jpg|0004 1.jpg', '«все кадры» в архиве — тоже по времени', dlNames);
 
+    console.log('обрыв загрузки превью');
+    /* первый запрос каждого превью рвётся (как при ERR_CERT_VERIFIER_CHANGED или смене сети) — страница догружает сама */
+    const flaky = await newPage();
+    const seen = {};
+    let aborted = 0;
+    await flaky.context().route(/\/p\/[A-Za-z0-9_-]+\.jpg/, (route) => {
+      const k = new URL(route.request().url()).pathname;
+      if (!seen[k]) { seen[k] = 1; aborted++; return route.abort('failed'); }
+      return route.continue();
+    });
+    await flaky.goto(BASE.replace(/\/$/, '') + new URL(editUrl).pathname + new URL(editUrl).hash);
+    await flaky.waitForSelector('#stName');
+    await flaky.fill('#stName', 'Ретушёр');
+    await flaky.press('#stName', 'Enter');
+    await flaky.waitForSelector('.cb-card img');
+    const reqLog = [];
+    flaky.on('request', (r) => { if (/\/p\//.test(r.url())) reqLog.push(new URL(r.url()).pathname.slice(-12) + ' ' + (new URL(r.url()).hash || '')); });
+    try {
+      await flaky.waitForFunction(() => {
+        /* видимые на экране (остальные грузятся лениво, когда до них долистают) */
+        const imgs = Array.from(document.querySelectorAll('.cb-card img, #cbTrayGrid img')).filter((i) => { const r = i.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight && r.width > 0; });
+        return imgs.length >= 3 && imgs.every((i) => i.complete && i.naturalWidth > 0);
+      }, null, { timeout: 20000 });
+    } catch (e) {
+      console.log('requests:', reqLog.join(' | '));
+      console.log(await flaky.evaluate(() => Array.from(document.querySelectorAll('.cb-card img')).map((i) => i.getAttribute('data-st-retry') + ':' + i.complete + ':' + i.naturalWidth + ':' + i.src.slice(-20)).join(' | ')));
+      throw e;
+    }
+    ok(aborted >= 3, 'превью, оборванные с первого раза, догрузились сами (оборвано: ' + aborted + ')');
+
     ok(errors.length === 0, 'без ошибок JavaScript на страницах', errors);
     console.log('\n' + pass + ' проверок в браузере прошли');
   } finally {
