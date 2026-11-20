@@ -267,6 +267,98 @@ function serve(proxy) {
     const dlNames = await owner.evaluate(() => stEntries({ scope: 'all' }).map((e) => e.name));
     ok(dlNames.join('|') === 'C_0003.jpg|A_0002.jpg|B_0001.jpg|0004 1.jpg', '«все кадры» в архиве — тоже по времени', dlNames);
 
+    console.log('просмотр крупно и звёздочки');
+    await owner.dblclick('#cbTrayGrid .cb-thumb >> nth=0');
+    await owner.waitForSelector('#stLb.st-open');
+    ok((await owner.textContent('#stLbName')) === 'C_0003.jpg' && (await owner.textContent('#stLbCount')) === '1 / 4', 'двойной клик по кадру галереи — просмотр крупно, тот же порядок');
+    await owner.keyboard.press('ArrowRight');
+    ok((await owner.textContent('#stLbName')) === 'A_0002.jpg', 'стрелка вправо — следующий кадр');
+    await owner.keyboard.press('1');
+    ok((await owner.textContent('#stLbStar')) === '★', 'клавиша 1 — отмечен');
+    await SHOT(owner, '7-lightbox');
+    await owner.keyboard.press('ArrowRight');
+    await owner.keyboard.press('1');
+    await owner.keyboard.press('0');
+    ok((await owner.textContent('#stLbStar')) === '', 'клавиша 0 — отметка снята');
+    await owner.click('#stLbImg');
+    await owner.waitForFunction(() => /oригинал|\/o\//.test(document.getElementById('stLbImg').src) || /\/o\//.test(document.getElementById('stLbImg').src), null, { timeout: 8000 });
+    ok(await owner.$eval('#stLbBody', (b) => b.classList.contains('st-full')), 'клик по кадру — оригинал в 100 %');
+    await owner.keyboard.press('Escape');
+    ok(!(await owner.isVisible('#stLb')), 'Esc — закрыть');
+    await owner.hover('#cbTrayGrid .cb-thumb >> nth=3');
+    await owner.keyboard.press('1');
+    const starred = await owner.$$eval('#cbTrayGrid .cb-thumb', (a) => a.filter((x) => x.querySelector('.st-star')).map((x) => cbPhotoById(x.getAttribute('data-pid')).name));
+    ok(starred.join('|') === 'A_0002.jpg|0004 1.jpg', 'навели мышь на кадр в галерее и нажали 1 — тоже отмечен; звёздочки видны в галерее', starred);
+    await owner.click('#stStarOnly');
+    ok((await owner.$$eval('#cbTrayGrid .cb-thumb', (a) => a.length)) === 2 && /· 2$/.test(await owner.textContent('#stStarOnly')), '«только отмеченные» — в галерее 2 кадра');
+
+    console.log('новая карточка в поле карточек');
+    const nCards = await owner.evaluate(() => App.cards.length);
+    await owner.click('.st-addcard');
+    ok((await owner.evaluate(() => App.cards.length)) === nCards + 1 && (await owner.evaluate(() => document.activeElement.classList.contains('cb-title'))), '«+ Новая карточка» — карточка-автолента, курсор в названии');
+    await owner.keyboard.type('Сумка 555');
+    await owner.dragAndDrop('#cbTrayGrid .cb-thumb >> nth=0', '.st-addcard');
+    await owner.waitForFunction((n) => App.cards.length === n + 2, nCards);
+    ok((await owner.evaluate(() => App.cards[App.cards.length - 1].pids.map((id) => cbPhotoById(id).name).join('|'))) === 'A_0002.jpg', 'кадр брошен на «+» — новая карточка сразу с ним');
+    await owner.evaluate(() => { const c = App.cards[App.cards.length - 2]; c.pids = App.photos.filter((p) => p.star).map((p) => p.id); cbMarkDirty(); cbRenderCards(); });
+    ok((await owner.$$eval('.cb-card .st-star', (a) => a.length)) === 0, 'в карточках звёздочек нет');
+    await owner.click('#stStarOnly');
+    await owner.waitForTimeout(1700);
+    await waitSaved(owner);
+    st = stateOf(pid2);
+    ok(st.photos.filter((p) => p.star).map((p) => p.name).sort().join('|') === '0004 1.jpg|A_0002.jpg' && st.photos.find((p) => p.star).star.by, 'отметки сохранены в отборе (кто отметил)');
+
+    console.log('комментарии к карточке');
+    await owner.click('#stModalPanel [data-st=close]').catch(() => {});
+    await owner.click('.cb-card:has(.cb-title[value="Сумка 555"]) [data-st=com]').catch(async () => {
+      const cid = await owner.evaluate(() => App.cards.find((c) => c.title === 'Сумка 555').id);
+      await owner.click('.cb-card[data-cid="' + cid + '"] .st-com-btn');
+    });
+    await owner.waitForSelector('#stComText');
+    await owner.fill('#stComText', 'Поправить синенький на ручке\nи убрать складку слева');
+    await owner.press('#stComText', 'Meta+Enter');
+    await owner.waitForSelector('.st-com-text');
+    ok((await owner.textContent('.st-com-text')).indexOf('Поправить синенький') === 0, 'комментарий добавлен (⌘+Enter)');
+    await owner.click('#stModalPanel [data-st=close]');
+    ok((await owner.textContent('.st-com-line')).indexOf('Поправить синенький на ручке') !== -1, 'на карточке видно строку комментария');
+    await owner.evaluate(() => { const el = document.querySelector('.st-com-line'); el.scrollIntoView({ block: 'center' }); });
+    await SHOT(owner, '8-card-comment');
+    await owner.waitForTimeout(1700);
+    await waitSaved(owner);
+    const cidBag = await owner.evaluate(() => App.cards.find((c) => c.title === 'Сумка 555').id);
+
+    /* клиент по ссылке пишет свой комментарий к той же карточке одновременно с владельцем */
+    await owner.click('.st-bar-right [data-st=links]');
+    await owner.waitForSelector('.st-link-in');
+    const edit2 = (await owner.$$eval('.st-link-in', (a) => a.map((x) => x.value)))[0];
+    await owner.click('#stModalPanel [data-st=close]');
+    const cli2 = await newPage();
+    await cli2.goto(edit2);
+    await cli2.waitForSelector('#stName');
+    await cli2.fill('#stName', 'Анна');
+    await cli2.press('#stName', 'Enter');
+    await cli2.waitForSelector('.cb-card[data-cid="' + cidBag + '"] .st-com-btn');
+    await cli2.click('.cb-card[data-cid="' + cidBag + '"] .st-com-btn');
+    await cli2.fill('#stComText', 'Фон чуть теплее');
+    await cli2.click('[data-st=com-add]');
+    await owner.evaluate((cid) => { const c = cbCardById(cid); c.comments.push({ id: 'cx1', by: 'Маша', at: new Date().toISOString(), text: 'Ретушь лёгкая' }); cbMarkDirty(); cbRenderCards(); }, cidBag);
+    await cli2.waitForTimeout(1700); await waitSaved(cli2);
+    await owner.waitForTimeout(1700); await waitSaved(owner);
+    st = stateOf(pid2);
+    const coms = st.cards.find((c) => c.id === cidBag).comments.map((c) => c.by + ': ' + c.text.split('\n')[0]);
+    ok(coms.length === 3 && coms.indexOf('Анна: Фон чуть теплее') !== -1 && coms.indexOf('Маша: Ретушь лёгкая') !== -1, 'одновременные комментарии двух людей — оба сохранились', coms);
+
+    const zc = await download(owner, { scope: 'selection', folders: true, rename: true });
+    const noteName = 'Сумка 555/00_КОММЕНТАРИЙ.jpg';
+    ok(zc.names.indexOf(noteName) !== -1 && zc.names.indexOf('Сумка 555/Сумка 555_1.jpg') !== -1, 'в архиве в папке карточки — 00_КОММЕНТАРИЙ.jpg', zc.names);
+    const xd = fs.mkdtempSync(path.join(os.tmpdir(), 'st-n-'));
+    execFileSync('unzip', ['-q', zc.file, '-d', xd], { env: UTF });
+    const dims = execFileSync('python3', ['-c', 'from PIL import Image;import sys;im=Image.open(sys.argv[1]);print(im.format, im.size[0], im.size[1])', path.join(xd, noteName)]).toString().trim();
+    ok(/^JPEG 1600 \d+$/.test(dims), 'комментарий — настоящий JPEG 1600 px', dims);
+    fs.copyFileSync(path.join(xd, noteName), path.join(__dirname, 'shot-note.jpg'));
+    const zf = await download(owner, { scope: 'selection', folders: false, rename: false });
+    ok(zf.names.indexOf('Сумка 555_00_КОММЕНТАРИЙ.jpg') !== -1, 'одной кучей — «карточка_00_КОММЕНТАРИЙ.jpg»', zf.names);
+
     console.log('обрыв загрузки превью');
     /* первый запрос каждого превью рвётся (как при ERR_CERT_VERIFIER_CHANGED или смене сети) — страница догружает сама */
     const flaky = await newPage();

@@ -23,7 +23,9 @@
      exports/<rand>.zip          архивы скачивания (удаляются правилом бакета через 3 дня)
 
    Действия (?a=...): ping, whoami, projects, create, share, delete,
-   state, save, upload, media, zip, exif.
+   state, save, upload, media, zip, exif, note.
+
+     exports/n/<pid>/<id>.jpg    картинки с комментариями к карточкам для архива (делает браузер; 3 дня)
    ============================================================ */
 
 'use strict';
@@ -424,6 +426,20 @@ async function doExif(pid, req) {
   return ok({ shot: out });
 }
 
+/* ---------- комментарий-картинка для архива ----------
+   Браузер рисует JPEG с комментариями карточки и заливает по этой ссылке, затем
+   передаёт её в архив как запись {note: id, name, size, crc}. Лежит в exports/ —
+   удаляется правилом бакета через 3 дня, как и сами архивы. */
+
+const NOTE_RE = /^[a-f0-9]{16,64}$/;
+const NOTE_MAX = 10 * 1024 * 1024;
+const noteKey = (pid, id) => 'exports/n/' + pid + '/' + id + '.jpg';
+
+function doNote(pid, req) {
+  if (!NOTE_RE.test(String(req.id || ''))) return fail(400, 'Плохой номер комментария');
+  return ok({ put: s3Presign('PUT', noteKey(pid, req.id), PUT_TTL) });
+}
+
 /* ---------- архив скачивания ----------
    Один ZIP (без сжатия, ZIP64 для больших) собирается многочастной загрузкой в
    бакете: страница шлёт кадры пачками, каждый вызов дописывает свой кусок. CRC и
@@ -538,10 +554,14 @@ async function doZip(pid, req) {
     ((state && state.photos) || []).forEach((p) => { if (p && p.fid) byFid[p.fid] = p; });
     const dt = dosDateTime(new Date());
     const entries = (req.entries || []).map((e) => {
+      if (e.note !== undefined) {
+        if (!NOTE_RE.test(String(e.note)) || !(+e.size > 0 && +e.size <= NOTE_MAX) || typeof e.crc !== 'number') throw Object.assign(new Error('Плохая картинка комментария'), { status: 400 });
+        return { key: noteKey(pid, e.note), name: Buffer.from(zipName(e.name || 'КОММЕНТАРИЙ.jpg'), 'utf8'), size: +e.size, crc: e.crc >>> 0 };
+      }
       const p = byFid[e.fid];
       if (!p || !FID_RE.test(e.fid)) throw Object.assign(new Error('Кадра нет в отборе: ' + e.fid), { status: 400 });
       if (!(p.size > 0) || typeof p.crc !== 'number') throw Object.assign(new Error('У кадра нет размера или CRC: ' + (p.name || e.fid)), { status: 422 });
-      return { fid: e.fid, name: Buffer.from(zipName(e.name || p.name), 'utf8'), size: +p.size, crc: p.crc >>> 0 };
+      return { key: P(pid) + 'o/' + e.fid, name: Buffer.from(zipName(e.name || p.name), 'utf8'), size: +p.size, crc: p.crc >>> 0 };
     });
     let offset = +req.offset || 0;
     /* длина куска известна заранее: заголовки + данные (+ оглавление и конец, если последний) */
@@ -562,7 +582,7 @@ async function doZip(pid, req) {
         if (Date.now() - t0 > ZIP_BUDGET_MS) throw new Error('Не успели собрать кусок архива — пачка слишком большая');
         await out.write(localHeader(x.name, x.crc, x.size, dt, needs64(x.offset)));
         let c = -1;
-        const n = await s3Stream(P(pid) + 'o/' + x.fid, (b) => { c = crc32Update(c, b); return out.write(b); });
+        const n = await s3Stream(x.key, (b) => { c = crc32Update(c, b); return out.write(b); });
         if (n !== x.size) throw new Error(x.name.toString('utf8') + ': размер в хранилище ' + n + ' вместо ' + x.size);
         if (((c ^ -1) >>> 0) !== x.crc) throw new Error(x.name.toString('utf8') + ': файл в хранилище повреждён (CRC)');
       }
@@ -623,6 +643,7 @@ module.exports.handler = async function (event) {
     else if (a === 'media') r = doMedia(pid, req);
     else if (a === 'zip') r = await doZip(pid, req);
     else if (a === 'exif') r = await doExif(pid, req);
+    else if (a === 'note') r = doNote(pid, req);
     else r = fail(400, 'Неизвестное действие');
     console.log(JSON.stringify({ ev: a, op: req.op || undefined, role: who.role, status: r.status, ms: Date.now() - t0 }));
     return json(r.status, r.result, h);

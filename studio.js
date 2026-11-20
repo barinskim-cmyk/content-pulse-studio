@@ -18,7 +18,7 @@
    Префикс функций — st*. ES5, без фреймворков, как Cardboard.
    ============================================================ */
 
-var ST_VERSION = '0.2.1';
+var ST_VERSION = '0.3.1';
 var ST_PROXY = 'https://functions.yandexcloud.net/d4e00ctqnc5ki2n86c7c';
 if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && window.ST_PROXY_OVERRIDE) ST_PROXY = window.ST_PROXY_OVERRIDE;
 
@@ -352,7 +352,7 @@ cbProjectData = function () {
   d.studio = 1;
   d.photos = App.photos.map(function (p) {
     var o = { id: p.id, name: p.name, w: p.w, h: p.h, kind: p.kind || 'photo' };
-    if (p.fid) { o.fid = p.fid; o.size = p.size; o.crc = p.crc; o.type = p.type || ''; o.added = p.added || null; if (p.shot !== undefined) o.shot = p.shot; }
+    if (p.fid) { o.fid = p.fid; o.size = p.size; o.crc = p.crc; o.type = p.type || ''; o.added = p.added || null; if (p.shot !== undefined) o.shot = p.shot; if (p.star) o.star = p.star; }
     else o.dataUrl = p.dataUrl;          /* референсы из Cardboard — внутри отбора, как раньше */
     return o;
   });
@@ -416,6 +416,13 @@ function stMerge3(base, local, remote) {
   base = base || {}; local = local || {}; remote = remote || {};
   var out = stClone(remote);
   ['cards', 'containers', 'templates'].forEach(function (k) { out[k] = stMergeById(base[k], local[k], remote[k]); });
+  /* комментарии карточки — по одному, чтобы одновременные не затирали друг друга */
+  var byId = function (arr) { var m = {}; (arr || []).forEach(function (c) { if (c) m[c.id] = c; }); return m; };
+  var Bc = byId(base.cards), Lc = byId(local.cards), Rc = byId(remote.cards);
+  out.cards.forEach(function (c) {
+    var b = Bc[c.id] && Bc[c.id].comments, l = Lc[c.id] && Lc[c.id].comments, r = Rc[c.id] && Rc[c.id].comments;
+    if (l || r) c.comments = stMergeComments(b, l, r);
+  });
   /* кадры — как карточки: по каждому кадру берём ту версию, которую меняли (например, дописали время съёмки) */
   out.photos = stMergeById(base.photos, local.photos, remote.photos);
   out.nextId = Math.max(+local.nextId || 0, +remote.nextId || 0);
@@ -674,8 +681,34 @@ cbRenderCards = (function (orig) {
       b.textContent = a ? 'Согласовано · ' + a.by : 'Согласовать';
       if (a) b.title = 'Согласовал(а) ' + a.by + ' ' + stTime(a.at) + '. Нажмите, чтобы снять.';
       head.insertBefore(b, sp);
+      var coms = card.comments || [];
+      var cb = document.createElement('button');
+      cb.className = 'cb-mini st-com-btn' + (coms.length ? ' st-on' : '');
+      cb.setAttribute('data-st', 'com');
+      cb.setAttribute('data-cid', card.id);
+      cb.textContent = coms.length ? 'Комментарии · ' + coms.length : 'Комментарий';
+      head.insertBefore(cb, sp);
+      if (coms.length) {
+        var last = coms[coms.length - 1];
+        var line = document.createElement('div');
+        line.className = 'st-com-line';
+        line.setAttribute('data-st', 'com');
+        line.setAttribute('data-cid', card.id);
+        line.title = 'Открыть комментарии';
+        line.innerHTML = '<b>' + stEsc(last.by) + ':</b> ' + stEsc(last.text.split('\n')[0]) + (coms.length > 1 ? ' <span class="cb-mono">+' + (coms.length - 1) + '</span>' : '');
+        head.parentNode.insertBefore(line, head.nextSibling);
+      }
       el.classList.toggle('st-approved', !!a);
     });
+    if (ST.mode === 'edit' && App.activeTab !== 'conts') {
+      var plus = document.createElement('button');
+      plus.className = 'st-addcard';
+      plus.title = 'Новая карточка-автолента. Можно бросить сюда кадр из галереи — карточка будет сразу с ним.';
+      plus.innerHTML = '<b>+</b><span>Новая карточка</span>';
+      var empty = host.querySelector('.cb-empty-hint');
+      if (empty) empty.remove();
+      host.appendChild(plus);
+    }
     stUpdateBar();
     return r;
   };
@@ -726,13 +759,17 @@ function stEntries(opts) {
     return out;
   }
   var groups = [], names = {};
-  App.cards.forEach(function (c, i) { groups.push({ name: stCardName(c, i), photos: stCardPhotos(c) }); });
+  App.cards.forEach(function (c, i) { groups.push({ name: stCardName(c, i), photos: stCardPhotos(c), comments: c.comments || [] }); });
   App.containers.forEach(function (c, i) { groups.push({ name: (c.title || '').trim() || ('Доп. контент ' + (i + 1)), photos: stContPhotos(c) }); });
   groups.forEach(function (g) {
     if (!g.photos.length) return;
     var base = stSafe(g.name), folder = base, n = 2;
     while (names[folder.toLowerCase()]) folder = base + ' (' + (n++) + ')';
     names[folder.toLowerCase()] = true;
+    if (opts.notes && g.comments && g.comments.length) {
+      out.push({ noteFor: true, cardName: g.name, comments: g.comments, size: 0,
+        name: uniq(opts.folders ? folder + '/00_КОММЕНТАРИЙ.jpg' : folder + '_00_КОММЕНТАРИЙ.jpg') });
+    }
     g.photos.forEach(function (p, k) {
       var file = opts.rename ? folder + '_' + (k + 1) + stExt(p.name) : stSafe(p.name);
       out.push({ fid: p.fid, name: uniq(opts.folders ? folder + '/' + file : file), size: p.size });
@@ -762,7 +799,8 @@ function stDownloadOpen() {
 }
 
 function stDownloadModal() {
-  var o = { scope: stGet('st_dl_scope', 'selection'), folders: stGet('st_dl_folders', '1') === '1', rename: stGet('st_dl_rename', '0') === '1' };
+  var o = { scope: stGet('st_dl_scope', 'selection'), folders: stGet('st_dl_folders', '1') === '1', rename: stGet('st_dl_rename', '0') === '1', notes: stGet('st_dl_notes', '1') === '1' };
+  var nCom = App.cards.filter(function (c) { return (c.comments || []).length && stCardPhotos(c).length; }).length;
   var sel = stEntries({ scope: 'selection', folders: true, rename: false }), all = stEntries({ scope: 'all' });
   var sz = function (list) { return list.reduce(function (s, e) { return s + (e.size || 0); }, 0); };
   stModal('<div class="cb-eyebrow">СКАЧАТЬ · ' + stEsc(App.projectName) + '</div><h2>Что скачать</h2>'
@@ -771,6 +809,7 @@ function stDownloadModal() {
     + '<div class="cb-lbl">Как разложить</div>'
     + '<label class="cb-check st-sel-only"><input type="checkbox" id="stDlFolders"' + (o.folders ? ' checked' : '') + '> Папками — по папке на карточку с её названием</label>'
     + '<label class="cb-check st-sel-only"><input type="checkbox" id="stDlRename"' + (o.rename ? ' checked' : '') + '> Переименовать файлы: <span class="cb-mono">название карточки_позиция</span></label>'
+    + (nCom ? '<label class="cb-check st-sel-only"><input type="checkbox" id="stDlNotes"' + (o.notes ? ' checked' : '') + '> Комментарии — картинкой <span class="cb-mono">00_КОММЕНТАРИЙ.jpg</span> в папке карточки <span class="cb-check-note">' + nCom + '</span></label>' : '')
     + '<div class="st-note st-small" id="stDlExample"></div>'
     + '<div class="st-row"><button class="cb-primary" data-st="dl-go">Скачать архив</button></div>'
     + '<div class="st-note st-small">Архив собирается в облаке, ссылка на него живёт 3 дня.</div>', { wide: false });
@@ -779,7 +818,8 @@ function stDownloadModal() {
 
 function stDownloadOpts() {
   var scope = (document.querySelector('input[name=stScope]:checked') || {}).value || 'selection';
-  return { scope: scope, folders: document.getElementById('stDlFolders').checked, rename: document.getElementById('stDlRename').checked };
+  var nt = document.getElementById('stDlNotes');
+  return { scope: scope, folders: document.getElementById('stDlFolders').checked, rename: document.getElementById('stDlRename').checked, notes: nt ? nt.checked : false };
 }
 
 function stDownloadSync() {
@@ -795,22 +835,33 @@ function stDownloadSync() {
 function stDownloadGo() {
   var o = stDownloadOpts();
   stSet('st_dl_scope', o.scope); stSet('st_dl_folders', o.folders ? '1' : '0'); stSet('st_dl_rename', o.rename ? '1' : '0');
+  if (document.getElementById('stDlNotes')) stSet('st_dl_notes', o.notes ? '1' : '0');
   var entries = stEntries(o);
   if (!entries.length) { cbToast('Нечего скачивать'); return; }
   stModalClose();
   var total = entries.reduce(function (s, e) { return s + (e.size || 0); }, 0);
   /* куски архива по ~600 МБ: каждый вызов прослойки укладывается в её время */
-  var PART = 600 * 1024 * 1024, parts = [], cur = [], acc = 0;
-  entries.forEach(function (e) {
-    cur.push({ fid: e.fid, name: e.name }); acc += e.size || 0;
-    if (acc >= PART) { parts.push(cur); cur = []; acc = 0; }
-  });
-  if (cur.length) parts.push(cur);
+  var PART = 600 * 1024 * 1024, parts = [];
   var zipName = stSafe(App.projectName) + (o.scope === 'all' ? ' — все кадры' : ' — отбор');
   var z, etags = [], prev = [], offset = 0, doneBytes = 0;
   cbBusyShow('Собираю архив: ' + entries.length + ' файлов, ' + stSize(total), 0.02);
   var flush = (App.dirty && ST.mode === 'edit') ? stSave() : Promise.resolve();
-  flush.then(function () { return stCallOk('zip', { pid: ST.pid, op: 'start' }); }).then(function (d) {
+  flush.then(function () {
+    /* комментарии карточек — картинками: рисуем здесь, в браузере, и кладём в облако */
+    var notes = entries.filter(function (e) { return e.noteFor; });
+    if (notes.length) cbBusyShow('Рисую комментарии: ' + notes.length, 0.02);
+    return notes.reduce(function (pr, e) {
+      return pr.then(function () { return stNoteEntry(e).then(function (ne) { entries[entries.indexOf(e)] = ne; }); });
+    }, Promise.resolve());
+  }).then(function () {
+    var cur = [], acc = 0;
+    entries.forEach(function (e) {
+      cur.push(e.note ? { note: e.note, name: e.name, size: e.size, crc: e.crc } : { fid: e.fid, name: e.name }); acc += e.size || 0;
+      if (acc >= PART) { parts.push(cur); cur = []; acc = 0; }
+    });
+    if (cur.length) parts.push(cur);
+    return stCallOk('zip', { pid: ST.pid, op: 'start' });
+  }).then(function (d) {
     z = d;
     return parts.reduce(function (pr, list, i) {
       return pr.then(function () {
@@ -905,18 +956,407 @@ function stRenderViewer() {
     + '<button class="cb-primary" data-st="download">Скачать</button></div>'
     + '<div class="st-note st-v-note">Это текущий отбор: если его поправят, здесь будет новая версия. Скачать можно всё или отбор, папками по карточкам.</div>';
   var any = false;
-  var block = function (name, photos, approved) {
+  var block = function (name, photos, approved, coms) {
     if (!photos.length) return '';
     any = true;
     return '<div class="st-v-card"><div class="st-v-title">' + stEsc(name) + ' <span class="cb-mono st-v-count">' + photos.length + '</span>'
-      + (approved ? ' <span class="st-v-ok cb-mono">согласовано · ' + stEsc(approved.by) + '</span>' : '') + '</div><div class="st-v-grid">'
+      + (approved ? ' <span class="st-v-ok cb-mono">согласовано · ' + stEsc(approved.by) + '</span>' : '') + '</div>'
+      + ((coms || []).length ? '<div class="st-v-coms">' + coms.map(function (c) { return '<div><b>' + stEsc(c.by) + ':</b> ' + stEsc(c.text).replace(/\n/g, '<br>') + '</div>'; }).join('') + '</div>' : '')
+      + '<div class="st-v-grid">'
       + photos.map(function (p) { return p.dataUrl ? '<img loading="lazy" src="' + stEsc(p.dataUrl) + '" title="' + stEsc(p.name) + '" alt="">' : '<div class="st-v-miss">' + stEsc(p.name) + '</div>'; }).join('')
       + '</div></div>';
   };
-  App.cards.forEach(function (c, i) { html += block(stCardName(c, i), stCardPhotos(c), c.approved); });
+  App.cards.forEach(function (c, i) { html += block(stCardName(c, i), stCardPhotos(c), c.approved, c.comments); });
   App.containers.forEach(function (c, i) { html += block((c.title || '').trim() || ('Доп. контент ' + (i + 1)), stContPhotos(c), null); });
   if (!any) html += '<div class="st-note">В отборе пока нет кадров.</div>';
   v.innerHTML = html;
+}
+
+/* ---------- звёздочки (отметка кадра при просмотре) ----------
+   Сначала разглядываешь съёмку и отмечаешь кадры (клавиша 1, как в Capture One;
+   0 — снять), потом включаешь «только отмеченные» и раскладываешь по карточкам.
+   Отметка общая для всех, хранится в отборе (p.star = {by, at}). В карточках её
+   не видно — только в галерее и в просмотре. */
+
+ST.starOnly = false;
+ST.hoverPid = '';
+
+function cbTrayFilterHook(p) { return !ST.starOnly || !!p.star || App.trayTab === 'ref'; }
+function cbThumbExtraHook(p) { return p.star ? '<span class="st-star" title="Отмечен · ' + stEsc(p.star.by || '') + '">★</span>' : ''; }
+
+function stStarCount() { return App.photos.filter(function (p) { return p.fid && p.star; }).length; }
+
+function stUpdateStarBar() {
+  var b = document.getElementById('stStarOnly');
+  if (!b) return;
+  b.textContent = '★ только отмеченные · ' + stStarCount();
+  b.classList.toggle('st-on', ST.starOnly);
+}
+
+/** Поставить / снять отметку. on: true | false | undefined (переключить). */
+function stStar(pid, on) {
+  var p = cbPhotoById(pid);
+  if (!p || ST.mode !== 'edit') return;
+  var want = on === undefined ? !p.star : on;
+  if (!!p.star === want) return;
+  if (want) p.star = { by: ST.name, at: stNow() }; else delete p.star;
+  cbMarkDirty();
+  /* перерисовать только эту миниатюру — галерея на тысячу кадров не мигает */
+  var el = document.querySelector('#cbTrayGrid .cb-thumb[data-pid="' + pid + '"]');
+  if (ST.starOnly && !want) cbRenderTray();
+  else if (el) {
+    var old = el.querySelector('.st-star');
+    if (old) old.remove();
+    if (want) el.insertAdjacentHTML('beforeend', cbThumbExtraHook(p));
+  }
+  stUpdateStarBar();
+  if (ST.lb) stLbShow();
+}
+
+function stInjectTrayBar() {
+  var head = document.querySelector('.cb-tray-head');
+  if (!head || document.getElementById('stStarOnly')) return;
+  var row = document.createElement('div');
+  row.className = 'cb-row st-tray-row';
+  row.innerHTML = '<button class="cb-mini st-staronly" id="stStarOnly" data-st="star-only" title="Показать только отмеченные кадры. Отметить: двойной клик по кадру → клавиша 1 (или навести мышь на кадр и нажать 1); 0 — снять">★ только отмеченные · 0</button>'
+    + '<span class="st-tray-hint">двойной клик — крупно · 1 — отметить</span>';
+  head.appendChild(row);
+}
+
+/* ---------- просмотр крупно ----------
+   Двойной клик по кадру в галерее, карточке или доп. контенте (или пробел над кадром
+   в галерее) — во весь экран. Листается тот же список: галерея — как она сейчас
+   показана (с фильтрами), карточка — её кадры. Клик по кадру — оригинал в 100 %. */
+
+ST.lb = null;      /* {list:[pid], i, full} */
+ST.orig = {};      /* fid -> ссылка на оригинал */
+
+function stLbDom() {
+  var lb = document.createElement('div');
+  lb.id = 'stLb';
+  lb.className = 'st-lb';
+  lb.innerHTML = '<div class="st-lb-head"><div class="st-lb-title"><b id="stLbName"></b> <span id="stLbStar" class="st-lb-star"></span></div>'
+    + '<span class="cb-spacer"></span><span class="cb-mono st-lb-count" id="stLbCount"></span>'
+    + '<button data-lb="prev" title="Предыдущий (стрелка влево)">Назад</button>'
+    + '<button data-lb="next" title="Следующий (стрелка вправо)">Вперёд</button>'
+    + '<button data-lb="star" id="stLbStarBtn" title="Отметить кадр (клавиша 1, снять — 0)">★ 1</button>'
+    + '<button data-lb="close" title="Закрыть (Esc)">Закрыть</button></div>'
+    + '<div class="st-lb-body" id="stLbBody"><img id="stLbImg" alt=""></div>'
+    + '<div class="st-lb-note cb-mono" id="stLbNote"></div>';
+  document.body.appendChild(lb);
+  lb.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-lb]');
+    if (b) {
+      var a = b.getAttribute('data-lb');
+      if (a === 'close') stLbClose();
+      else if (a === 'prev') stLbStep(-1);
+      else if (a === 'next') stLbStep(1);
+      else if (a === 'star' && ST.lb) stStar(ST.lb.list[ST.lb.i]);
+      return;
+    }
+    if (e.target.id === 'stLbImg') { ST.lb.full = !ST.lb.full; stLbShow(); return; }
+    if (e.target.id === 'stLbBody') stLbClose();
+  });
+}
+
+/** pid кадра под элементом: миниатюра галереи, слот карточки (ручной или автолента), доп. контент. */
+function stPidOf(el) {
+  if (el.classList.contains('cb-thumb')) return { pid: el.getAttribute('data-pid'), from: 'tray' };
+  if (el.classList.contains('cb-cont-item')) {
+    var cont = cbContById(el.getAttribute('data-kid'));
+    return cont ? { pid: cont.photoIds[+el.getAttribute('data-pi')], from: 'cont', list: cont.photoIds.slice() } : null;
+  }
+  var card = cbCardById(el.getAttribute('data-cid'));
+  if (!card) return null;
+  if (el.hasAttribute('data-auto-idx')) return { pid: (card.pids || [])[+el.getAttribute('data-auto-idx')], from: 'card', list: (card.pids || []).slice() };
+  var s = (card.slots || [])[+el.getAttribute('data-idx')];
+  return { pid: s && s.pid, from: 'card', list: (card.slots || []).map(function (x) { return x.pid; }).filter(Boolean) };
+}
+
+function stLbOpenAt(el) {
+  var info = stPidOf(el);
+  if (!info || !info.pid || !cbPhotoById(info.pid)) return;
+  var list = info.from === 'tray'
+    ? Array.prototype.map.call(document.querySelectorAll('#cbTrayGrid .cb-thumb'), function (t) { return t.getAttribute('data-pid'); })
+    : info.list;
+  list = list.filter(function (x) { return !!cbPhotoById(x); });
+  var i = list.indexOf(info.pid);
+  if (i === -1) { list = [info.pid]; i = 0; }
+  ST.lb = { list: list, i: i, full: false };
+  document.getElementById('stLb').classList.add('st-open');
+  stLbShow();
+}
+
+function stLbClose() {
+  ST.lb = null;
+  document.getElementById('stLb').classList.remove('st-open');
+  document.getElementById('stLbImg').removeAttribute('src');
+}
+
+function stLbStep(d) {
+  if (!ST.lb) return;
+  var n = ST.lb.list.length;
+  ST.lb.i = (ST.lb.i + d + n) % n;
+  ST.lb.full = false;
+  stLbShow();
+}
+
+function stLbShow() {
+  if (!ST.lb) return;
+  var p = cbPhotoById(ST.lb.list[ST.lb.i]);
+  if (!p) return;
+  var img = document.getElementById('stLbImg');
+  var body = document.getElementById('stLbBody');
+  document.getElementById('stLbName').textContent = p.name;
+  document.getElementById('stLbCount').textContent = (ST.lb.i + 1) + ' / ' + ST.lb.list.length;
+  document.getElementById('stLbStar').textContent = p.star ? '★' : '';
+  document.getElementById('stLbStar').title = p.star ? 'Отметил(а) ' + (p.star.by || '') + ' ' + stTime(p.star.at) : '';
+  var sb = document.getElementById('stLbStarBtn');
+  sb.textContent = p.star ? '★ снять · 0' : '★ отметить · 1';
+  sb.classList.toggle('st-on', !!p.star);
+  sb.style.display = ST.mode === 'edit' && p.fid ? '' : 'none';
+  body.classList.toggle('st-full', !!ST.lb.full);
+  var note = 'клик — ' + (ST.lb.full ? 'вписать' : 'оригинал 100 %') + ' · стрелки — листать' + (ST.mode === 'edit' ? ' · 1 — отметить, 0 — снять' : '') + ' · Esc — закрыть';
+  var fid = p.fid;
+  if (ST.lb.full && fid) {
+    if (ST.orig[fid]) { img.src = ST.orig[fid]; }
+    else {
+      if (p.dataUrl) img.src = p.dataUrl;
+      note = 'загружаю оригинал… · ' + note;
+      stCallOk('media', { pid: ST.pid, fids: [fid], orig: true }).then(function (d) {
+        ST.orig[fid] = d.media[fid] && d.media[fid].orig;
+        if (ST.lb && ST.lb.full && cbPhotoById(ST.lb.list[ST.lb.i]).fid === fid) stLbShow();
+      }, function () { });
+    }
+  } else if (p.dataUrl) img.src = p.dataUrl;
+  else img.removeAttribute('src');
+  document.getElementById('stLbNote').textContent = note;
+  /* соседний кадр — заранее */
+  var nx = cbPhotoById(ST.lb.list[(ST.lb.i + 1) % ST.lb.list.length]);
+  if (nx && nx.dataUrl) { var pre = new Image(); pre.src = nx.dataUrl; }
+}
+
+document.addEventListener('dblclick', function (e) {
+  if (!ST.pid || e.target.closest('button, input, select, textarea')) return;
+  var el = e.target.closest('.cb-thumb, .cb-slot.cb-filled, .cb-cont-item');
+  if (!el) return;
+  e.preventDefault();
+  stLbOpenAt(el);
+}, true);
+
+document.addEventListener('mouseover', function (e) {
+  var t = e.target.closest && e.target.closest('#cbTrayGrid .cb-thumb');
+  ST.hoverPid = t ? t.getAttribute('data-pid') : '';
+});
+
+document.addEventListener('keydown', function (e) {
+  var a = document.activeElement;
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (ST.lb) {
+    if (e.key === 'Escape') stLbClose();
+    else if (e.key === 'ArrowLeft') stLbStep(-1);
+    else if (e.key === 'ArrowRight') stLbStep(1);
+    else if (e.key === '1') stStar(ST.lb.list[ST.lb.i], true);
+    else if (e.key === '0') stStar(ST.lb.list[ST.lb.i], false);
+    else if (e.key === ' ') stLbClose();
+    else return;
+    e.preventDefault(); e.stopPropagation();
+    return;
+  }
+  if (!ST.hoverPid || document.getElementById('stModal').classList.contains('cb-open')) return;
+  if (e.key === '1') stStar(ST.hoverPid, true);
+  else if (e.key === '0') stStar(ST.hoverPid, false);
+  else if (e.key === ' ') { var el = document.querySelector('#cbTrayGrid .cb-thumb[data-pid="' + ST.hoverPid + '"]'); if (el) stLbOpenAt(el); }
+  else return;
+  e.preventDefault(); e.stopPropagation();
+}, true);
+
+/* ---------- новая карточка прямо в поле карточек ----------
+   Большой «+» после последней карточки: нажать — новая карточка-автолента
+   (как в Content Pulse 2.0), бросить на него кадр из галереи — карточка сразу с ним. */
+
+function stAutoTemplate() {
+  return cbTplById('seed_auto_flat')
+    || App.templates.filter(function (t) { return t.mode === 'auto' && !t.hasHero; })[0]
+    || App.templates.filter(function (t) { return t.mode === 'auto'; })[0]
+    || null;
+}
+
+function stAddAutoCard(pid) {
+  var t = stAutoTemplate();
+  if (!t) { cbPickerOpen(null); return; }
+  cbAddCardFromTpl(t.id);
+  var card = App.cards[App.cards.length - 1];
+  if (pid && card && card.mode === 'auto') { card.pids.push(pid); cbMarkDirty(); cbRenderCards(); cbRenderTray(); }
+  var el = document.querySelector('#cbCards .cb-card[data-cid="' + card.id + '"]');
+  if (el) {
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    var ti = el.querySelector('.cb-title');
+    if (ti) { ti.focus(); ti.select(); }
+  }
+}
+
+(function stPlusEvents() {
+  var root = document.getElementById('cbCards');
+  root.addEventListener('click', function (e) {
+    if (e.target.closest('.st-addcard')) { e.preventDefault(); stAddAutoCard(); }
+  });
+  root.addEventListener('dragover', function (e) {
+    var plus = e.target.closest('.st-addcard');
+    if (!plus) return;
+    e.preventDefault();
+    plus.classList.add('st-over');
+  });
+  root.addEventListener('dragleave', function (e) {
+    var plus = e.target.closest('.st-addcard');
+    if (plus) plus.classList.remove('st-over');
+  });
+  root.addEventListener('drop', function (e) {
+    var plus = e.target.closest('.st-addcard');
+    if (!plus) return;
+    e.preventDefault(); e.stopPropagation();
+    plus.classList.remove('st-over');
+    var data = e.dataTransfer.getData('text/plain') || '';
+    stAddAutoCard(data.indexOf('photo:') === 0 ? data.slice(6) : null);
+  }, true);
+})();
+
+/* ---------- комментарии к карточкам ----------
+   card.comments = [{id, by, at, text}]. Видны на карточке строкой, у ретушёра — под
+   названием карточки, в архиве — картинкой «00_КОММЕНТАРИЙ.jpg» в папке карточки:
+   на картинку все смотрят, на текстовый файл — нет. */
+
+function stCommentsOpen(cid) {
+  var card = cbCardById(cid);
+  if (!card) return;
+  var i = App.cards.indexOf(card);
+  var list = card.comments || [];
+  var html = '<div class="cb-eyebrow">КОММЕНТАРИИ</div><h2>' + stEsc(stCardName(card, i)) + '</h2>';
+  html += list.length ? '<div class="st-coms">' + list.map(function (c) {
+    return '<div class="st-com" data-id="' + stEsc(c.id) + '"><div class="st-com-meta cb-mono">' + stEsc(c.by) + ' · ' + stTime(c.at)
+      + (ST.mode === 'edit' ? ' <button class="cb-mini st-com-del" data-st="com-del">удалить</button>' : '') + '</div>'
+      + '<div class="st-com-text">' + stEsc(c.text).replace(/\n/g, '<br>') + '</div></div>';
+  }).join('') + '</div>' : '<div class="st-note">Комментариев пока нет.</div>';
+  if (ST.mode === 'edit') {
+    html += '<textarea id="stComText" class="st-input st-com-input" rows="4" autofocus placeholder="Например: поправить синий на рукаве, убрать складку"></textarea>'
+      + '<div class="st-row"><button class="cb-primary" data-st="com-add">Добавить</button><span class="st-note st-small">⌘ + Enter</span></div>'
+      + '<div class="st-note st-small">При скачивании комментарий ляжет в папку карточки картинкой «00_КОММЕНТАРИЙ.jpg».</div>';
+  }
+  ST._comCard = cid;
+  var panel = stModal(html, { wide: true });
+  var ta = panel.querySelector('#stComText');
+  if (ta) setTimeout(function () { ta.focus(); }, 30);
+}
+
+function stCommentAdd() {
+  var card = cbCardById(ST._comCard);
+  var ta = document.getElementById('stComText');
+  var text = (ta && ta.value || '').trim().slice(0, 4000);
+  if (!card || !text) return;
+  card.comments = (card.comments || []).concat([{ id: stRandId('c'), by: ST.name || 'владелец', at: stNow(), text: text }]);
+  stLog('прокомментировал(а) «' + stCardName(card, App.cards.indexOf(card)) + '»: ' + text.slice(0, 80));
+  cbMarkDirty(); cbRenderCards();
+  stCommentsOpen(card.id);
+}
+
+function stCommentDel(btn) {
+  if (btn.getAttribute('data-armed') !== '1') { btn.setAttribute('data-armed', '1'); btn.textContent = 'точно удалить?'; btn.classList.add('st-armed'); return; }
+  var card = cbCardById(ST._comCard);
+  var id = btn.closest('.st-com').getAttribute('data-id');
+  if (!card) return;
+  card.comments = (card.comments || []).filter(function (c) { return c.id !== id; });
+  stLog('удалил(а) комментарий к «' + stCardName(card, App.cards.indexOf(card)) + '»');
+  cbMarkDirty(); cbRenderCards();
+  stCommentsOpen(card.id);
+}
+
+/** Склейка комментариев карточки: новые с обеих сторон остаются, удалённые кем-то — уходят. */
+function stMergeComments(b, l, r) {
+  var ids = function (a) { var m = {}; (a || []).forEach(function (c) { m[c.id] = c; }); return m; };
+  var B = ids(b), L = ids(l), R = ids(r), out = [], seen = {};
+  (r || []).concat(l || []).forEach(function (c) {
+    if (seen[c.id]) return;
+    seen[c.id] = true;
+    if (B[c.id] && (!L[c.id] || !R[c.id])) return;
+    out.push(c);
+  });
+  out.sort(function (x, y) { return x.at < y.at ? -1 : x.at > y.at ? 1 : 0; });
+  return out;
+}
+
+/** Переносы строк по ширине для canvas (длинные слова тоже режутся). */
+function stWrap(ctx, text, width) {
+  var out = [];
+  String(text).split('\n').forEach(function (para) {
+    var line = '';
+    para.split(/\s+/).forEach(function (w) {
+      while (ctx.measureText(w).width > width) {
+        var k = w.length;
+        while (k > 1 && ctx.measureText(w.slice(0, k)).width > width) k--;
+        if (line) { out.push(line); line = ''; }
+        out.push(w.slice(0, k)); w = w.slice(k);
+      }
+      var t = line ? line + ' ' + w : w;
+      if (ctx.measureText(t).width > width && line) { out.push(line); line = w; } else line = t;
+    });
+    out.push(line);
+  });
+  return out;
+}
+
+/** JPEG с комментариями карточки: жёлтый лист, крупный текст — чтобы ретушёр не пропустил. */
+function stNoteJpeg(cardName, comments) {
+  var W = 1600, PAD = 110, TW = W - PAD * 2;
+  var F = '-apple-system, "Helvetica Neue", Arial, sans-serif';
+  var cnv = document.createElement('canvas');
+  var ctx = cnv.getContext('2d');
+  var blocks = [], h = PAD;
+  ctx.font = '600 34px ' + F; h += 50;
+  ctx.font = '700 72px ' + F;
+  var titleLines = stWrap(ctx, cardName, TW); h += titleLines.length * 88 + 50;
+  comments.forEach(function (c) {
+    ctx.font = '500 52px ' + F;
+    var lines = stWrap(ctx, c.text, TW);
+    blocks.push({ c: c, lines: lines });
+    h += 54 + lines.length * 70 + 50;
+  });
+  h += 60 + PAD;
+  cnv.width = W; cnv.height = Math.max(1100, h);
+  ctx.fillStyle = '#FFE066'; ctx.fillRect(0, 0, W, cnv.height);
+  ctx.textBaseline = 'top';
+  var y = PAD;
+  ctx.fillStyle = '#6b5600'; ctx.font = '600 34px ' + F;
+  ctx.fillText('КОММЕНТАРИЙ К КАРТОЧКЕ', PAD, y); y += 50;
+  ctx.fillStyle = '#111111'; ctx.font = '700 72px ' + F;
+  titleLines.forEach(function (l) { ctx.fillText(l, PAD, y); y += 88; });
+  y += 20;
+  ctx.fillStyle = '#111111'; ctx.fillRect(PAD, y, TW, 4); y += 30;
+  blocks.forEach(function (b) {
+    ctx.fillStyle = '#6b5600'; ctx.font = '500 34px ' + F;
+    ctx.fillText(b.c.by + ' · ' + stTime(b.c.at), PAD, y); y += 54;
+    ctx.fillStyle = '#111111'; ctx.font = '500 52px ' + F;
+    b.lines.forEach(function (l) { ctx.fillText(l, PAD, y); y += 70; });
+    y += 50;
+  });
+  ctx.fillStyle = '#6b5600'; ctx.font = '400 28px ' + F;
+  ctx.fillText('Content Pulse · ' + (App.projectName || ''), PAD, cnv.height - PAD + 20);
+  return new Promise(function (resolve) { cnv.toBlob(resolve, 'image/jpeg', 0.92); });
+}
+
+/** Картинка-комментарий: нарисовать, посчитать CRC, залить в облако. Возвращает запись для архива. */
+function stNoteEntry(e) {
+  return stNoteJpeg(e.cardName, e.comments).then(function (blob) {
+    return blob.arrayBuffer().then(function (buf) {
+      var a = new Uint8Array(buf), c = -1;
+      for (var i = 0; i < a.length; i++) c = ST_CRC[(c ^ a[i]) & 0xFF] ^ (c >>> 8);
+      var id = stRandId('').replace(/^/, '') + stRandId('');
+      id = id.replace(/[^a-f0-9]/g, '').slice(0, 32);
+      return stCallOk('note', { pid: ST.pid, id: id }).then(function (d) {
+        return stPut(d.put, blob);
+      }).then(function () { return { note: id, name: e.name, size: blob.size, crc: (c ^ -1) >>> 0 }; });
+    });
+  });
 }
 
 /* ---------- превью, которые не загрузились ----------
@@ -998,15 +1438,20 @@ document.addEventListener('click', function (e) {
   else if (act === 'dl-go') stDownloadGo();
   else if (act === 'log') stLogOpen();
   else if (act === 'approve-all') stApproveAll();
+  else if (act === 'com') stCommentsOpen(t.getAttribute('data-cid'));
+  else if (act === 'com-add') stCommentAdd();
+  else if (act === 'com-del') stCommentDel(t);
+  else if (act === 'star-only') { ST.starOnly = !ST.starOnly; cbRenderTray(); stUpdateStarBar(); }
 });
 
 document.addEventListener('change', function (e) {
-  if (e.target.name === 'stScope' || e.target.id === 'stDlFolders' || e.target.id === 'stDlRename') stDownloadSync();
+  if (e.target.name === 'stScope' || e.target.id === 'stDlFolders' || e.target.id === 'stDlRename' || e.target.id === 'stDlNotes') stDownloadSync();
 });
 
 document.addEventListener('keydown', function (e) {
   if (e.key !== 'Enter') return;
   var id = e.target.id;
+  if (id === 'stComText') { if (e.metaKey || e.ctrlKey) { e.preventDefault(); stCommentAdd(); } return; }
   if (id === 'stKey') stLogin();
   else if (id === 'stName') stNameSave();
   else if (id === 'stNewName') stCreateProject();
@@ -1023,4 +1468,7 @@ window.addEventListener('beforeunload', function (e) {
 });
 
 stInjectBar();
+stInjectTrayBar();
+stLbDom();
+cbRenderTray = (function (orig) { return function () { var r = orig.apply(this, arguments); stUpdateStarBar(); return r; }; })(cbRenderTray);
 stBoot();

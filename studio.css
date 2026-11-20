@@ -70,3 +70,45 @@ body.st-dl #stViewer { display: block; position: fixed; inset: 0; overflow-y: au
   .st-bar-right button:not(.cb-primary) { padding: 6px 8px; }
   .st-proj { max-width: 20vw; }
 }
+
+/* звёздочка: тихая метка на миниатюре галереи (в карточках её нет) */
+.cb-thumb { position: relative; }
+.st-star { position: absolute; right: 6px; bottom: 5px; font-size: 13px; line-height: 1; color: #c9956b; text-shadow: 0 0 3px rgba(0,0,0,0.8); pointer-events: none; }
+.st-tray-row { margin-top: 6px; align-items: center; justify-content: space-between; }
+.st-staronly { white-space: nowrap; }
+.st-staronly.st-on { border-color: #c9956b; color: #c9956b; }
+.st-tray-hint { font-size: 10px; color: #6d6d6c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* просмотр крупно */
+.st-lb { display: none; position: fixed; inset: 0; z-index: 900; background: #0d0d0d; flex-direction: column; }
+.st-lb-head .cb-spacer { flex: 1; }
+.st-lb.st-open { display: flex; }
+.st-lb-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid #262626; }
+.st-lb-title { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-lb-star { color: #c9956b; margin-left: 6px; }
+.st-lb-count { font-size: 11px; color: #6d6d6c; margin-right: 6px; }
+.st-lb-head button.st-on { border-color: #c9956b; color: #c9956b; }
+.st-lb-body { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.st-lb-body img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+.st-lb-body.st-full { overflow: auto; align-items: flex-start; justify-content: flex-start; }
+.st-lb-body.st-full img { max-width: none; max-height: none; cursor: zoom-out; }
+.st-lb-note { font-size: 10px; color: #6d6d6c; text-align: center; padding: 6px 0 10px; }
+
+/* новая карточка прямо в поле карточек */
+.st-addcard { display: flex; align-items: center; justify-content: center; gap: 14px; width: 100%; min-height: 120px; margin: 6px 0 24px;
+  border: 2px dashed #3a3a37; border-radius: 8px; background: transparent; color: #a3a09a; font-size: 15px; cursor: pointer; }
+.st-addcard b { font-size: 56px; line-height: 1; font-weight: 300; color: #c9956b; }
+.st-addcard:hover, .st-addcard.st-over { border-color: #c9956b; color: #e7c9a8; background: #1d1a17; }
+
+/* комментарии */
+.cb-mini.st-com-btn.st-on { border-color: #c9956b; color: #c9956b; }
+.st-com-line { margin: -4px 0 10px; padding: 6px 10px; border-left: 2px solid #c9956b; background: #1d1a17; color: #e7c9a8; font-size: 12px;
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-com-line .cb-mono { color: #a3a09a; font-size: 10px; }
+.st-coms { max-height: 46vh; overflow-y: auto; margin-bottom: 10px; }
+.st-com { padding: 8px 0; border-bottom: 1px solid #222220; }
+.st-com-meta { font-size: 10px; color: #6d6d6c; margin-bottom: 4px; }
+.st-com-text { font-size: 13px; line-height: 1.45; }
+.st-com-del { float: right; }
+.st-com-input { font-family: inherit; resize: vertical; border: 1px solid #2a2a28; border-radius: 3px; background: #1a1a18; color: #f2f2f1; }
+.st-v-coms { margin: -2px 0 10px; padding: 8px 12px; border-left: 2px solid #c9956b; background: #1d1a17; color: #e7c9a8; font-size: 12px; line-height: 1.5; }
